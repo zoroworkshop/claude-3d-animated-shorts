@@ -1,6 +1,7 @@
 name: Render 3D Animated Short
 
 on:
+  push:
   workflow_dispatch:
 
 jobs:
@@ -34,41 +35,65 @@ jobs:
           CHROME_PATH=$(echo "$CHROME_OUT" | tail -n 1 | awk '{print $2}')
           echo "CHROME_PATH=$CHROME_PATH" >> $GITHUB_ENV
 
-      - name: 6. Patch engine/render.cjs
+      - name: 6. Create Safety Patch for render.cjs
         working-directory: ./engine
         run: |
-          node -e '
+          cat << 'EOF' > patch.cjs
+          const http = require("http");
           const fs = require("fs");
-          let code = fs.readFileSync("render.cjs", "utf8");
-          const headerPatch = `
-          const _origCreateReadStream = require("fs").createReadStream;
-          require("fs").createReadStream = function(p, opts) {
-            const stream = _origCreateReadStream.call(this, p, opts);
-            stream.on("error", () => {});
-            return stream;
-          };
+          const Module = require("module");
+
           process.on("uncaughtException", (err) => {
             if (err && err.code === "ENOENT") return;
             console.error(err);
             process.exit(1);
           });
-          `;
-          code = headerPatch + "\n" + code;
-          code = code.replace(
-            /http\.createServer\(\s*(?:async\s*)?\((req,\s*res)\)\s*=>\s*\{/,
-            `http.createServer((req, res) => { if (req.url.includes("favicon.ico")) { res.writeHead(404); res.end(); return; }`
-          );
-          code = code.replace(
-            /puppeteer\.launch\(\s*\{([\s\S]*?)\}\s*\)/,
-            `puppeteer.launch({ $1, executablePath: process.env.CHROME_PATH, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] })`
-          );
-          fs.writeFileSync("render.cjs", code, "utf8");
-          '
+
+          const origStream = fs.createReadStream;
+          fs.createReadStream = function(p, opts) {
+            const s = origStream.call(this, p, opts);
+            s.on("error", () => {});
+            return s;
+          };
+
+          const origServer = http.createServer;
+          http.createServer = function(fn) {
+            return origServer.call(this, (req, res) => {
+              if (req.url && req.url.includes("favicon.ico")) {
+                res.writeHead(404);
+                res.end();
+                return;
+              }
+              return fn(req, res);
+            });
+          };
+
+          const origLoad = Module._load;
+          Module._load = function(request) {
+            const mod = origLoad.apply(this, arguments);
+            if ((request === "puppeteer" || request === "puppeteer-core") && mod) {
+              const target = mod.default || mod;
+              if (target.launch && !target.__patched) {
+                const origLaunch = target.launch;
+                target.launch = function(opts = {}) {
+                  return origLaunch.call(this, {
+                    ...opts,
+                    executablePath: process.env.CHROME_PATH || opts.executablePath,
+                    args: [...(opts.args || []), "--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"]
+                  });
+                };
+                target.__patched = true;
+              }
+            }
+            return mod;
+          };
+          EOF
 
       - name: 7. Render Video
         working-directory: ./engine
         env:
           XQ: "&viewer=1&skit=1"
+          NODE_OPTIONS: "-r ./patch.cjs"
         run: |
           mkdir -p out
           node render.cjs out/skit.mp4 1080 1920 30
