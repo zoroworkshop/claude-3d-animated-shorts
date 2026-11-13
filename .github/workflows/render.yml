@@ -27,12 +27,12 @@ jobs:
         working-directory: ./engine
         run: npm install
 
-      - name: 4. Install Headless Chrome System Libraries & FFmpeg
+      - name: 4. Install System Libraries, FFmpeg, and Xvfb
         run: |
           sudo apt-get update && sudo apt-get install -y \
             libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 \
             libpango-1.0-0 libcairo2 libxcomposite1 libxdamage1 \
-            libxfixes3 libxrandr2 ffmpeg
+            libxfixes3 libxrandr2 ffmpeg xvfb
 
       - name: 5. Install Chrome Stable
         working-directory: ./engine
@@ -90,7 +90,6 @@ jobs:
                       "--no-sandbox",
                       "--disable-setuid-sandbox",
                       "--disable-dev-shm-usage",
-                      // --- WEBGL FIX FOR HEADLESS CI ---
                       "--use-gl=angle",
                       "--use-angle=swiftshader",
                       "--enable-unsafe-swiftshader"
@@ -104,14 +103,14 @@ jobs:
           };
           EOF
 
-      - name: 7. Render Video
+      - name: 7. Render Video (via Xvfb)
         working-directory: ./engine
         env:
           XQ: "&viewer=1&skit=1"
           NODE_OPTIONS: "-r ./patch.cjs"
         run: |
           mkdir -p out
-          node render.cjs out/skit.mp4 1080 1920 30
+          xvfb-run --auto-servernum --server-args="-screen 0 1920x1080x24" node render.cjs out/skit.mp4 1080 1920 30
 
       - name: 8. Upload Video
         uses: actions/upload-artifact@v4
