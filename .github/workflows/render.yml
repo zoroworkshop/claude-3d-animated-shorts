@@ -1,0 +1,80 @@
+name: Render 3D Animated Short
+
+on:
+  workflow_dispatch:
+
+jobs:
+  render:
+    runs-on: ubuntu-22.04
+    steps:
+      - name: 1. Checkout Repository
+        uses: actions/checkout@v4
+
+      - name: 2. Fix curl (23) and Fetch 3D Assets
+        run: |
+          sudo apt-get update && sudo apt-get install -y wget curl
+          sed -i 's/curl -L -s -o/wget -q -O/g; s/curl -sL -o/wget -q -O/g; s/curl -Lo/wget -O/g' scripts/fetch-assets.sh || true
+          bash scripts/fetch-assets.sh
+
+      - name: 3. Install Engine Dependencies
+        working-directory: ./engine
+        run: npm install
+
+      - name: 4. Install Headless Chrome System Libraries & FFmpeg
+        run: |
+          sudo apt-get update && sudo apt-get install -y \
+            libnss3 libatk1.0-0 libatk-bridge2.0-0 libcups2 libgbm1 \
+            libpango-1.0-0 libcairo2 libxcomposite1 libxdamage1 \
+            libxfixes3 libxrandr2 ffmpeg
+
+      - name: 5. Install Chrome Stable
+        working-directory: ./engine
+        run: |
+          CHROME_OUT=$(npx @puppeteer/browsers install chrome@stable)
+          CHROME_PATH=$(echo "$CHROME_OUT" | tail -n 1 | awk '{print $2}')
+          echo "CHROME_PATH=$CHROME_PATH" >> $GITHUB_ENV
+
+      - name: 6. Patch engine/render.cjs
+        working-directory: ./engine
+        run: |
+          node -e '
+          const fs = require("fs");
+          let code = fs.readFileSync("render.cjs", "utf8");
+          const headerPatch = `
+          const _origCreateReadStream = require("fs").createReadStream;
+          require("fs").createReadStream = function(p, opts) {
+            const stream = _origCreateReadStream.call(this, p, opts);
+            stream.on("error", () => {});
+            return stream;
+          };
+          process.on("uncaughtException", (err) => {
+            if (err && err.code === "ENOENT") return;
+            console.error(err);
+            process.exit(1);
+          });
+          `;
+          code = headerPatch + "\n" + code;
+          code = code.replace(
+            /http\.createServer\(\s*(?:async\s*)?\((req,\s*res)\)\s*=>\s*\{/,
+            `http.createServer((req, res) => { if (req.url.includes("favicon.ico")) { res.writeHead(404); res.end(); return; }`
+          );
+          code = code.replace(
+            /puppeteer\.launch\(\s*\{([\s\S]*?)\}\s*\)/,
+            `puppeteer.launch({ $1, executablePath: process.env.CHROME_PATH, args: ["--no-sandbox", "--disable-setuid-sandbox", "--disable-dev-shm-usage", "--disable-gpu"] })`
+          );
+          fs.writeFileSync("render.cjs", code, "utf8");
+          '
+
+      - name: 7. Render Video
+        working-directory: ./engine
+        env:
+          XQ: "&viewer=1&skit=1"
+        run: |
+          mkdir -p out
+          node render.cjs out/skit.mp4 1080 1920 30
+
+      - name: 8. Upload Video
+        uses: actions/upload-artifact@v4
+        with:
+          name: rendered-skit-mp4
+          path: engine/out/skit.mp4
