@@ -14,8 +14,22 @@ jobs:
       - name: 2. Fix curl (23) and Fetch 3D Assets
         run: |
           sudo apt-get update && sudo apt-get install -y wget curl
-          mkdir -p assets
-          sed -i 's/curl -L -s -o/wget -q -O/g; s/curl -sL -o/wget -q -O/g; s/curl -Lo/wget -O/g; s/curl -L -o/wget -O/g' scripts/fetch-assets.sh || true
+          
+          # 1. Create common directories just in case
+          mkdir -p assets engine/assets engine/public/assets
+          
+          # 2. Create a LOCAL curl wrapper to force directory creation (avoids permission issues)
+          mkdir -p local-bin
+          cat << 'EOF' > local-bin/curl
+          #!/bin/bash
+          /usr/bin/curl --create-dirs "$@"
+          EOF
+          chmod +x local-bin/curl
+          
+          # 3. Add our local bin to the PATH so the script uses our wrapper
+          export PATH="$PWD/local-bin:$PATH"
+          
+          # 4. Run the script
           bash scripts/fetch-assets.sh
 
       - name: 3. Install Engine Dependencies
